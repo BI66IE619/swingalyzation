@@ -76,7 +76,7 @@ export default function VideoPlayer({ track, isGhost = false }: Props) {
 
   const {
     activeTool, activeColor, activeLineWidth, isPlaying, playbackSpeed, showAngles,
-    setCurrentFrame, addDrawing, addLabel, setFps, setContactFrame, removeDrawing,
+    setActiveTool, setCurrentFrame, addDrawing, addLabel, setFps, setContactFrame, removeDrawing,
     updateLabel, removeLabel,
   } = useAnalysisStore();
 
@@ -291,24 +291,27 @@ export default function VideoPlayer({ track, isGhost = false }: Props) {
 
   const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const coords = getCanvasCoords(e);
+    const drawFrame = track.frameData[track.currentFrame];
+    const hitLabel =
+      drawFrame && drawFrame.labels.length > 0
+        ? findLabelAt(drawFrame.labels, coords)
+        : null;
+
+    // Pressing on a label auto-switches to the Select tool and starts
+    // dragging, no matter which tool is currently active.
+    if (hitLabel) {
+      setActiveTool('select');
+      setSelectedLabelId(hitLabel.id);
+      draggingLabelId.current = hitLabel.id;
+      labelDragOffset.current = {
+        dx: coords.x - hitLabel.position.x,
+        dy: coords.y - hitLabel.position.y,
+      };
+      return;
+    }
 
     if (activeTool === 'select') {
-      const drawFrame = track.frameData[track.currentFrame];
-      if (!drawFrame) {
-        setSelectedLabelId(null);
-        return;
-      }
-      const hitLabel = findLabelAt(drawFrame.labels, coords);
-      if (hitLabel) {
-        setSelectedLabelId(hitLabel.id);
-        draggingLabelId.current = hitLabel.id;
-        labelDragOffset.current = {
-          dx: coords.x - hitLabel.position.x,
-          dy: coords.y - hitLabel.position.y,
-        };
-      } else {
-        setSelectedLabelId(null);
-      }
+      setSelectedLabelId(null);
       return;
     }
 
@@ -355,7 +358,7 @@ export default function VideoPlayer({ track, isGhost = false }: Props) {
   const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const coords = getCanvasCoords(e);
 
-    if (activeTool === 'select' && draggingLabelId.current) {
+    if (draggingLabelId.current) {
       const newX = Math.max(
         0,
         Math.min(dimensions.width, coords.x - labelDragOffset.current.dx)
