@@ -3,7 +3,7 @@
 import React, { useRef, useEffect, useCallback, useState } from 'react';
 import { useAnalysisStore, FPS_OPTIONS } from '@/store/useAnalysisStore';
 import { VideoTrack } from '@/types';
-import { drawFreehand, drawLine, drawCircle, drawAngle, drawArrow, drawSkeleton } from '@/utils/drawing';
+import { drawFreehand, drawSkeleton, drawFrameContent } from '@/utils/drawing';
 import { detectCrackOfBat } from '@/utils/audioDetection';
 import { usePoseEstimation } from '@/hooks/usePoseEstimation';
 
@@ -158,55 +158,11 @@ export default function VideoPlayer({ track, isGhost = false }: Props) {
     canvas.height = dimensions.height;
 
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.save();
-
-    if (track.isFlipped) {
-      ctx.translate(canvas.width, 0);
-      ctx.scale(-1, 1);
-    }
 
     const drawFrame = track.frameData[track.currentFrame];
     if (drawFrame) {
-      for (const drawing of drawFrame.drawings) {
-        switch (drawing.type) {
-          case 'freehand':
-            drawFreehand(ctx, drawing.points, drawing.color, drawing.lineWidth);
-            break;
-          case 'line':
-            drawLine(ctx, drawing.start, drawing.end, drawing.color, drawing.lineWidth);
-            break;
-          case 'circle':
-            drawCircle(ctx, drawing.center, drawing.radius, drawing.color, drawing.lineWidth);
-            break;
-          case 'angle':
-            drawAngle(ctx, drawing.vertex, drawing.arm1End, drawing.arm2End, drawing.color, drawing.lineWidth);
-            break;
-          case 'arrow':
-            drawArrow(ctx, drawing.start, drawing.end, drawing.color, drawing.lineWidth);
-            break;
-        }
-      }
-
-      for (const label of drawFrame.labels) {
-        ctx.fillStyle = label.color;
-        ctx.font = `bold ${label.fontSize}px monospace`;
-        const metrics = ctx.measureText(label.text);
-        const padding = 4;
-
-        ctx.fillStyle = 'rgba(0,0,0,0.7)';
-        ctx.fillRect(
-          label.position.x - padding,
-          label.position.y - label.fontSize - padding,
-          metrics.width + padding * 2,
-          label.fontSize + padding * 2
-        );
-
-        ctx.fillStyle = label.color;
-        ctx.fillText(label.text, label.position.x, label.position.y);
-      }
+      drawFrameContent(ctx, drawFrame, track.isFlipped);
     }
-
-    ctx.restore();
 
     if (skeletonCanvas && track.showSkeleton) {
       skeletonCanvas.width = dimensions.width;
@@ -430,6 +386,78 @@ export default function VideoPlayer({ track, isGhost = false }: Props) {
     }
   };
 
+  const exportPNG = async () => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    const w = dimensions.width;
+    const h = dimensions.height;
+
+    const target = track.currentFrame / track.fps;
+
+    // Ensure raw pixel data is available and we're on the exact frame
+    if (video.readyState < 2) {
+      await new Promise<void>((resolve) => {
+        const onReady = () => {
+          video.removeEventListener('loadeddata', onReady);
+          resolve();
+        };
+        video.addEventListener('loadeddata', onReady);
+        video.load();
+      });
+    }
+
+    if (Math.abs(video.currentTime - target) > 1 / (track.fps * 2)) {
+      video.currentTime = target;
+      await new Promise<void>((resolve) => {
+        const onSeeked = () => {
+          video.removeEventListener('seeked', onSeeked);
+          resolve();
+        };
+        video.addEventListener('seeked', onSeeked);
+      });
+    }
+
+    const out = document.createElement('canvas');
+    out.width = w;
+    out.height = h;
+    const ctx = out.getContext('2d');
+    if (!ctx) return;
+
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, w, h);
+
+    ctx.save();
+    if (track.isFlipped) {
+      ctx.translate(w, 0);
+      ctx.scale(-1, 1);
+    }
+    ctx.drawImage(video, 0, 0, w, h);
+    ctx.restore();
+
+    const frame = track.frameData[track.currentFrame];
+    if (frame) {
+      drawFrameContent(ctx, frame, track.isFlipped);
+    }
+
+    const landmarks = track.poseLandmarks[track.currentFrame];
+    if (track.showSkeleton && landmarks) {
+      ctx.save();
+      if (track.isFlipped) {
+        ctx.translate(w, 0);
+        ctx.scale(-1, 1);
+      }
+      drawSkeleton(ctx, landmarks, w, h, showAngles);
+      ctx.restore();
+    }
+
+    const a = document.createElement('a');
+    const baseName = track.name.replace(/\.[^.]+$/, '') || 'swing';
+    a.download = `${baseName}_frame_${track.currentFrame}.png`;
+    a.href = out.toDataURL('image/png');
+    a.click();
+  };
+
   return (
     <div ref={containerRef} className={`relative ${isGhost ? '' : 'flex flex-col items-center w-full'}`}>
       {!isGhost && (
@@ -599,6 +627,13 @@ export default function VideoPlayer({ track, isGhost = false }: Props) {
           className="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs text-white"
         >
           📍 Set Contact Here
+        </button>
+        <button
+          onClick={exportPNG}
+          className="px-3 py-1 bg-fuchsia-600 hover:bg-fuchsia-500 rounded text-xs text-white font-mono"
+          title="Download this frame with all drawings, labels and skeleton as a PNG"
+        >
+          📸 Export PNG
         </button>
       </div>
       </>

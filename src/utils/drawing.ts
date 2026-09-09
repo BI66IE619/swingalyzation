@@ -1,4 +1,4 @@
-import { Point, AngleMeasurement, PoseLandmark } from '@/types';
+import { Point, AngleMeasurement, PoseLandmark, Drawing, Label } from '@/types';
 
 export function getAngleBetweenPoints(a: Point, b: Point, c: Point): number {
   const radians =
@@ -110,6 +110,70 @@ export function drawArrow(
   );
   ctx.closePath();
   ctx.fill();
+}
+
+export interface FrameOverlayContent {
+  drawings: Drawing[];
+  labels: Label[];
+}
+
+/**
+ * Draws all frame-bound drawings and labels onto a context.
+ * If `flip` is false, it assumes the caller already applied the horizontal
+ * mirror transform. If `flip` is true, it applies the mirror itself.
+ */
+export function drawFrameContent(
+  ctx: CanvasRenderingContext2D,
+  content: FrameOverlayContent,
+  flip: boolean
+) {
+  if (flip) {
+    ctx.save();
+    ctx.translate(ctx.canvas.width, 0);
+    ctx.scale(-1, 1);
+  }
+
+  for (const drawing of content.drawings) {
+    switch (drawing.type) {
+      case 'freehand':
+        drawFreehand(ctx, drawing.points, drawing.color, drawing.lineWidth);
+        break;
+      case 'line':
+        drawLine(ctx, drawing.start, drawing.end, drawing.color, drawing.lineWidth);
+        break;
+      case 'circle':
+        drawCircle(ctx, drawing.center, drawing.radius, drawing.color, drawing.lineWidth);
+        break;
+      case 'angle':
+        drawAngle(ctx, drawing.vertex, drawing.arm1End, drawing.arm2End, drawing.color, drawing.lineWidth);
+        break;
+      case 'arrow':
+        drawArrow(ctx, drawing.start, drawing.end, drawing.color, drawing.lineWidth);
+        break;
+    }
+  }
+
+  for (const label of content.labels) {
+    ctx.fillStyle = label.color;
+    ctx.font = `bold ${label.fontSize}px monospace`;
+    const metrics = ctx.measureText(label.text);
+    const padding = 4;
+
+    ctx.fillStyle = 'rgba(0,0,0,0.7)';
+    ctx.fillRect(
+      label.position.x - padding,
+      label.position.y - label.fontSize - padding,
+      metrics.width + padding * 2,
+      label.fontSize + padding * 2
+    );
+
+    ctx.fillStyle = label.color;
+    ctx.fillText(label.text, label.position.x, label.position.y);
+  }
+
+  if (flip) {
+    ctx.restore();
+  }
 }
 
 export function calculatePoseAngles(landmarks: PoseLandmark[]): AngleMeasurement[] {
