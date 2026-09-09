@@ -60,7 +60,9 @@ export default function VideoPlayer({ track, isGhost = false }: Props) {
     const handleLoaded = () => {
       const dur = video.duration;
       const fps = track.fps;
-      setDimensions({ width: video.videoWidth, height: video.videoHeight });
+      const w = video.videoWidth > 0 ? video.videoWidth : 640;
+      const h = video.videoHeight > 0 ? video.videoHeight : 360;
+      setDimensions({ width: w, height: h });
 
       useAnalysisStore.setState((s) => ({
         tracks: s.tracks.map((t) =>
@@ -71,14 +73,35 @@ export default function VideoPlayer({ track, isGhost = false }: Props) {
       }));
     };
 
+    // Ensure the first frame is decoded and visible once data is available
+    const handleCanPlay = () => {
+      const store = useAnalysisStore.getState();
+      const t = store.tracks.find((x) => x.id === track.id);
+      if (!t || isGhost) return;
+      try {
+        video.currentTime = t.currentFrame / t.fps;
+      } catch {
+        // ignore transient seek errors
+      }
+    };
+
     video.addEventListener('loadedmetadata', handleLoaded);
-    return () => video.removeEventListener('loadedmetadata', handleLoaded);
+    video.addEventListener('loadeddata', handleCanPlay);
+    return () => {
+      video.removeEventListener('loadedmetadata', handleLoaded);
+      video.removeEventListener('loadeddata', handleCanPlay);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [track.id, track.fps]);
 
   useEffect(() => {
     const video = videoRef.current;
     if (!video || isGhost) return;
-    video.currentTime = track.currentFrame / track.fps;
+    try {
+      video.currentTime = track.currentFrame / track.fps;
+    } catch {
+      // ignore transient seek errors
+    }
   }, [track.currentFrame, track.fps, isGhost]);
 
   const startPlayback = useCallback(() => {
@@ -420,7 +443,7 @@ export default function VideoPlayer({ track, isGhost = false }: Props) {
         </div>
       )}
 
-      <div className="relative" style={{ maxWidth: '100%', aspectRatio: `${dimensions.width}/${dimensions.height}`, background: 'black' }}>
+      <div className="relative w-full" style={{ maxWidth: '100%', aspectRatio: `${dimensions.width}/${dimensions.height}`, background: 'black' }}>
         <video
           ref={videoRef}
           src={track.url}
@@ -431,7 +454,7 @@ export default function VideoPlayer({ track, isGhost = false }: Props) {
           }}
           muted
           playsInline
-          crossOrigin="anonymous"
+          preload="auto"
         />
 
         <canvas
