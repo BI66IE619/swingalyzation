@@ -115,6 +115,7 @@ export interface AnalysisState {
   addDrawing: (trackId: string, frame: number, drawing: Drawing) => void;
   removeDrawing: (trackId: string, frame: number, drawingIndex: number) => void;
   addLabel: (trackId: string, frame: number, label: Label) => void;
+  updateLabel: (trackId: string, frame: number, labelId: string, updates: Partial<Label>) => void;
   removeLabel: (trackId: string, frame: number, labelId: string) => void;
   setFps: (trackId: string, fps: number) => void;
   setContactFrame: (trackId: string, frame: number | null) => void;

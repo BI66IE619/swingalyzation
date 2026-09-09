@@ -2,7 +2,7 @@
 
 import React, { useRef, useEffect, useCallback, useState } from 'react';
 import { useAnalysisStore, FPS_OPTIONS } from '@/store/useAnalysisStore';
-import { VideoTrack } from '@/types';
+import { VideoTrack, Label } from '@/types';
 import { drawFreehand, drawSkeleton, drawFrameContent } from '@/utils/drawing';
 import { detectCrackOfBat } from '@/utils/audioDetection';
 import { usePoseEstimation } from '@/hooks/usePoseEstimation';
@@ -26,6 +26,41 @@ function distToSegment(
   return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
 }
 
+function getLabelBounds(
+  ctx: CanvasRenderingContext2D,
+  label: Label
+): { x: number; y: number; width: number; height: number } {
+  ctx.font = `bold ${label.fontSize}px monospace`;
+  const width = ctx.measureText(label.text).width;
+  const padding = 4;
+  return {
+    x: label.position.x - padding,
+    y: label.position.y - label.fontSize - padding,
+    width: width + padding * 2,
+    height: label.fontSize + padding * 2,
+  };
+}
+
+function findLabelAt(labels: Label[], point: { x: number; y: number }): Label | null {
+  // Hit-test using a temporary 2d context for text metrics
+  const probe = document.createElement('canvas').getContext('2d');
+  if (!probe) return null;
+  for (let i = labels.length - 1; i >= 0; i--) {
+    const label = labels[i];
+    const b = getLabelBounds(probe, label);
+    const pad = 6;
+    if (
+      point.x >= b.x - pad &&
+      point.x <= b.x + b.width + pad &&
+      point.y >= b.y - pad &&
+      point.y <= b.y + b.height + pad
+    ) {
+      return label;
+    }
+  }
+  return null;
+}
+
 export default function VideoPlayer({ track, isGhost = false }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -35,10 +70,14 @@ export default function VideoPlayer({ track, isGhost = false }: Props) {
   const [dimensions, setDimensions] = useState({ width: 640, height: 360 });
   const [isAnalyzingAudio, setIsAnalyzingAudio] = useState(false);
   const [audioProgress, setAudioProgress] = useState(0);
+  const [selectedLabelId, setSelectedLabelId] = useState<string | null>(null);
+  const draggingLabelId = useRef<string | null>(null);
+  const labelDragOffset = useRef({ dx: 0, dy: 0 });
 
   const {
     activeTool, activeColor, activeLineWidth, isPlaying, playbackSpeed, showAngles,
     setCurrentFrame, addDrawing, addLabel, setFps, setContactFrame, removeDrawing,
+    updateLabel, removeLabel,
   } = useAnalysisStore();
 
   const { isLoading: poseLoading, error: poseError } = usePoseEstimation({
@@ -162,6 +201,29 @@ export default function VideoPlayer({ track, isGhost = false }: Props) {
     const drawFrame = track.frameData[track.currentFrame];
     if (drawFrame) {
       drawFrameContent(ctx, drawFrame, track.isFlipped);
+
+      // Highlight the selected label with a bounding box + corner handle
+      if (selectedLabelId) {
+        const sel = drawFrame.labels.find((l) => l.id === selectedLabelId);
+        if (sel) {
+          const b = getLabelBounds(ctx, sel);
+          ctx.save();
+          if (track.isFlipped) {
+            ctx.translate(canvas.width, 0);
+            ctx.scale(-1, 1);
+          }
+          ctx.strokeStyle = '#ffffff';
+          ctx.lineWidth = 1.5;
+          ctx.setLineDash([6, 4]);
+          ctx.strokeRect(b.x, b.y, b.width, b.height);
+          ctx.setLineDash([]);
+
+          // corner handle
+          ctx.fillStyle = '#3b82f6';
+          ctx.fillRect(b.x + b.width - 6, b.y + b.height - 6, 12, 12);
+          ctx.restore();
+        }
+      }
     }
 
     if (skeletonCanvas && track.showSkeleton) {
@@ -182,11 +244,38 @@ export default function VideoPlayer({ track, isGhost = false }: Props) {
         }
       }
     }
-  }, [track, dimensions, showAngles]);
+  }, [track, dimensions, showAngles, selectedLabelId]);
 
   useEffect(() => {
     renderFrame();
   }, [renderFrame, track.currentFrame]);
+
+  // Drop label selection when navigating to another frame
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setSelectedLabelId(null);
+  }, [track.currentFrame]);
+
+  // Keyboard: Del deletes the selected label, Esc deselects
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        const frame = useAnalysisStore.getState().tracks.find((t) => t.id === track.id)
+          ?.frameData?.[track.currentFrame];
+        const sel = frame?.labels.find((l) => l.id === selectedLabelId);
+        if (sel) {
+          e.preventDefault();
+          removeLabel(track.id, track.currentFrame, sel.id);
+          setSelectedLabelId(null);
+        }
+      } else if (e.key === 'Escape') {
+        setSelectedLabelId(null);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [track.id, track.currentFrame, selectedLabelId, removeLabel]);
 
   const getCanvasCoords = (e: React.MouseEvent<HTMLCanvasElement>): { x: number; y: number } => {
     const canvas = canvasRef.current;
@@ -201,9 +290,30 @@ export default function VideoPlayer({ track, isGhost = false }: Props) {
   };
 
   const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (activeTool === 'none' || activeTool === 'select') return;
-    isDragging.current = true;
     const coords = getCanvasCoords(e);
+
+    if (activeTool === 'select') {
+      const drawFrame = track.frameData[track.currentFrame];
+      if (!drawFrame) {
+        setSelectedLabelId(null);
+        return;
+      }
+      const hitLabel = findLabelAt(drawFrame.labels, coords);
+      if (hitLabel) {
+        setSelectedLabelId(hitLabel.id);
+        draggingLabelId.current = hitLabel.id;
+        labelDragOffset.current = {
+          dx: coords.x - hitLabel.position.x,
+          dy: coords.y - hitLabel.position.y,
+        };
+      } else {
+        setSelectedLabelId(null);
+      }
+      return;
+    }
+
+    if (activeTool === 'none') return;
+    isDragging.current = true;
     dragStart.current = coords;
 
     if (activeTool === 'freehand') {
@@ -243,8 +353,24 @@ export default function VideoPlayer({ track, isGhost = false }: Props) {
   };
 
   const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!isDragging.current) return;
     const coords = getCanvasCoords(e);
+
+    if (activeTool === 'select' && draggingLabelId.current) {
+      const newX = Math.max(
+        0,
+        Math.min(dimensions.width, coords.x - labelDragOffset.current.dx)
+      );
+      const newY = Math.max(
+        0,
+        Math.min(dimensions.height, coords.y - labelDragOffset.current.dy)
+      );
+      updateLabel(track.id, track.currentFrame, draggingLabelId.current, {
+        position: { x: newX, y: newY },
+      });
+      return;
+    }
+
+    if (!isDragging.current) return;
 
     if (activeTool === 'freehand') {
       currentFreehand.current.push(coords);
@@ -263,6 +389,10 @@ export default function VideoPlayer({ track, isGhost = false }: Props) {
   };
 
   const handleMouseUp = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (draggingLabelId.current) {
+      draggingLabelId.current = null;
+      return;
+    }
     if (!isDragging.current || !dragStart.current) return;
     isDragging.current = false;
     const coords = getCanvasCoords(e);
@@ -349,6 +479,17 @@ export default function VideoPlayer({ track, isGhost = false }: Props) {
   const handleDoubleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
     if (activeTool !== 'none' && activeTool !== 'select' && activeTool !== 'eraser') return;
     const coords = getCanvasCoords(e);
+
+    // Selecting an existing label opens the editor panel instead of creating a duplicate
+    const drawFrame = track.frameData[track.currentFrame];
+    if (drawFrame && drawFrame.labels.length > 0) {
+      const hit = findLabelAt(drawFrame.labels, coords);
+      if (hit) {
+        setSelectedLabelId(hit.id);
+        return;
+      }
+    }
+
     const text = prompt('Enter label text:');
     if (text) {
       addLabel(track.id, track.currentFrame, {
@@ -495,7 +636,7 @@ export default function VideoPlayer({ track, isGhost = false }: Props) {
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
-          onMouseLeave={() => { isDragging.current = false; }}
+          onMouseLeave={() => { isDragging.current = false; draggingLabelId.current = null; }}
           onDoubleClick={handleDoubleClick}
         />
 
@@ -524,6 +665,60 @@ export default function VideoPlayer({ track, isGhost = false }: Props) {
           </div>
         )}
       </div>
+
+      {/* Label Editor */}
+      {!isGhost && selectedLabelId && (() => {
+        const frame = track.frameData[track.currentFrame];
+        const sel = frame?.labels.find((l) => l.id === selectedLabelId);
+        if (!sel) return null;
+        return (
+          <div className="mt-2 w-full max-w-[700px] flex flex-wrap items-center gap-2 bg-gray-900 border border-blue-500/40 rounded-lg px-3 py-2">
+            <span className="text-xs text-blue-400 font-mono">🏷 LABEL:</span>
+            <input
+              type="text"
+              value={sel.text}
+              onChange={(e) =>
+                updateLabel(track.id, track.currentFrame, sel.id, { text: e.target.value })
+              }
+              className="flex-1 min-w-[120px] bg-gray-800 text-white text-xs rounded px-2 py-1 outline-none focus:border focus:border-blue-500"
+              placeholder="Label text..."
+            />
+            <button
+              onClick={() =>
+                updateLabel(track.id, track.currentFrame, sel.id, {
+                  fontSize: Math.max(10, sel.fontSize - 2),
+                })
+              }
+              className="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs text-white font-mono"
+              title="Smaller text"
+            >
+              A−
+            </button>
+            <span className="text-xs text-gray-300 font-mono w-8 text-center">{sel.fontSize}px</span>
+            <button
+              onClick={() =>
+                updateLabel(track.id, track.currentFrame, sel.id, {
+                  fontSize: Math.min(72, sel.fontSize + 2),
+                })
+              }
+              className="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs text-white font-mono"
+              title="Bigger text"
+            >
+              A+
+            </button>
+            <button
+              onClick={() => removeLabel(track.id, track.currentFrame, sel.id)}
+              className="px-3 py-1 bg-red-600 hover:bg-red-500 rounded text-xs text-white font-bold"
+              title="Delete label (Del)"
+            >
+              ✕ Delete
+            </button>
+            <span className="text-[10px] text-gray-500 font-mono ml-auto">
+              Drag to move • A−/A+ to resize
+            </span>
+          </div>
+        );
+      })()}
 
       {!isGhost && (
       <>

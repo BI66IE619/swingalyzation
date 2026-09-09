@@ -139,6 +139,27 @@ export const useAnalysisStore = create<AnalysisState>((set) => ({
       }),
     })),
 
+  updateLabel: (trackId: string, frame: number, labelId: string, updates: Partial<Label>) =>
+    set((state) => ({
+      tracks: state.tracks.map((t) => {
+        if (t.id !== trackId) return t;
+        const existing = t.frameData[frame];
+        if (!existing) return t;
+        return {
+          ...t,
+          frameData: {
+            ...t.frameData,
+            [frame]: {
+              ...existing,
+              labels: existing.labels.map((label) =>
+                label.id === labelId ? { ...label, ...updates } : label
+              ),
+            },
+          },
+        };
+      }),
+    })),
+
   removeLabel: (trackId: string, frame: number, labelId: string) =>
     set((state) => ({
       tracks: state.tracks.map((t) => {
